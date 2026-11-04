@@ -1,6 +1,7 @@
 import AppKit
 
 final class Controller: NSObject, NSApplicationDelegate {
+    private let meter = SystemMeter()
     private let tile = Tile(frame: NSRect(x: 0, y: 0, width: 128, height: 128))
     private let detail = NSTextField(labelWithString: "")
     private var window: NSWindow?
@@ -27,16 +28,17 @@ final class Controller: NSObject, NSApplicationDelegate {
     }
 
     private func refresh(force: Bool = false) {
-        let reading = SystemReading.current()
+        let reading = meter.sample()
         guard force || tile.reading != reading else { return }
         tile.reading = reading
         NSApp.dockTile.display()
         detail.stringValue = "Занято свопа: " + reading.swap + " " + reading.unit
             + "\nНагрузка на память: " + (reading.pressure?.description ?? "Нет данных")
+            + "\nЗагрузка CPU: " + reading.cpu
     }
 
     private func detailsItem() -> NSMenuItem {
-        let item = NSMenuItem(title: "Показатели памяти", action: #selector(show), keyEquivalent: "")
+        let item = NSMenuItem(title: "Показатели системы", action: #selector(show), keyEquivalent: "")
         item.target = self
         return item
     }
@@ -49,7 +51,7 @@ final class Controller: NSObject, NSApplicationDelegate {
 
     @objc func show() {
         if window == nil {
-            let size = NSRect(x: 0, y: 0, width: 365, height: 110)
+            let size = NSRect(x: 0, y: 0, width: 365, height: 125)
             let panel = NSWindow(contentRect: size, styleMask: [.titled, .closable, .miniaturizable],
                                  backing: .buffered, defer: false)
             panel.title = "Dock Signal"
@@ -72,8 +74,11 @@ final class Controller: NSObject, NSApplicationDelegate {
 }
 
 if CommandLine.arguments.contains("--check") {
-    let reading = SystemReading.current()
-    print("SWAP", reading.swap, reading.unit, "MEM", reading.pressure?.description ?? "Нет данных")
+    let meter = SystemMeter()
+    _ = meter.sample()
+    Thread.sleep(forTimeInterval: 1)
+    let reading = meter.sample()
+    print("SWAP", reading.swap, reading.unit, "MEM", reading.pressure?.description ?? "Нет данных", "CPU", reading.cpu)
     exit(0)
 }
 

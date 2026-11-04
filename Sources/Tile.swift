@@ -28,8 +28,8 @@ final class Tile: NSView {
         }
 
         label("SWAP · " + reading.unit, x: 64, y: 102, size: 19, weight: .bold)
-        label(reading.swap, x: 64, y: 66, size: reading.swap.count > 4 ? 33 : 44, weight: .heavy)
-        label("MEM", x: 33, y: 29, size: 16, weight: .bold)
+        label(reading.swap, x: 64, y: 73, size: reading.swap.count > 4 ? 33 : 44, weight: .heavy)
+        label("MEM", x: 33, y: 42, size: 16, weight: .bold)
         let color: NSColor
         switch reading.pressure {
         case .normal: color = .systemGreen
@@ -40,8 +40,22 @@ final class Tile: NSView {
         for index in 0..<3 {
             let active = index < (reading.pressure?.segments ?? 0)
             (active ? color : NSColor.white.withAlphaComponent(0.2)).setFill()
-            let rect = NSRect(x: 56 + 20 * index, y: 23, width: 17, height: 12)
+            let rect = NSRect(x: 56 + 20 * index, y: 37, width: 17, height: 10)
             NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).fill()
+        }
+
+        label("CPU", x: 33, y: 23, size: 16, weight: .bold)
+        let track = NSRect(x: 56, y: 18, width: 57, height: 10)
+        let rail = NSBezierPath(roundedRect: track, xRadius: 3, yRadius: 3)
+        NSColor.white.withAlphaComponent(0.2).setFill()
+        rail.fill()
+        if let percent = reading.cpuPercent {
+            let load = CGFloat(percent) / 100
+            NSColor(srgbRed: min(1, 0.24 + 1.52 * load),
+                    green: min(0.88, 0.22 + 1.32 * (1 - load)),
+                    blue: 0.25, alpha: 1).setFill()
+            rail.addClip()
+            NSRect(x: track.minX, y: track.minY, width: track.width * load, height: track.height).fill()
         }
     }
 }
