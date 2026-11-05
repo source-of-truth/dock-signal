@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 
 final class Dial {
-    static let titles = ["Система", "Диск и Wi-Fi", "Скорость сети"]
+    private(set) var pages = Page.initial
     var draw: (CGFloat) -> Void = { _ in }
     private(set) var page = 0
     private var position: CGFloat = 0
@@ -21,7 +21,7 @@ final class Dial {
     private var preciseWheelTurned = false
 
     func updatePermission() {
-        guard AXIsProcessTrusted() else {
+        guard pages.count > 1, AXIsProcessTrusted() else {
             if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
             if dragging { dragging = false; settle(at: page) }
             return
@@ -122,14 +122,26 @@ final class Dial {
         settle(at: Int(destination.rounded()) + (direction > 0 ? 1 : -1))
     }
 
-    func select(_ index: Int) {
+    func configure(_ enabled: [Page]) {
+        guard !enabled.isEmpty else { return }
+        let current = pages[page]
+        pages = enabled
         dragging = false
-        let current = Int(position.rounded())
-        let choices = [current - 1, current, current + 1]
-        if let target = choices.first(where: { Self.index($0) == index }) { settle(at: target) }
+        preciseWheelTurned = false
+        wheelInside = false
+        lastWheelEvent = -Double.infinity
+        page = pages.firstIndex(of: current) ?? 0
+        finish()
     }
 
-    static func index(_ n: Int) -> Int { ((n % titles.count) + titles.count) % titles.count }
+    func select(_ index: Int) {
+        guard pages.indices.contains(index) else { return }
+        dragging = false
+        let current = Int(position.rounded())
+        let forward = Page.index(index - current, count: pages.count)
+        let step = forward * 2 <= pages.count ? forward : forward - pages.count
+        settle(at: current + step)
+    }
 
     private func stopAnimation() {
         timer?.invalidate()
@@ -139,7 +151,7 @@ final class Dial {
     private func settle(at target: Int) {
         stopAnimation()
         destination = CGFloat(target)
-        page = Self.index(target)
+        page = Page.index(target, count: pages.count)
         if abs(destination - position) < 0.001 || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             finish()
             return

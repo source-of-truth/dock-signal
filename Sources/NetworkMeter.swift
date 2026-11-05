@@ -34,7 +34,8 @@ final class NetworkMeter {
         }
         var disk = statfs()
         if statfs(NSHomeDirectory(), &disk) == 0 {
-            result.freeGB = String(format: "%.0f", Double(disk.f_bavail) * Double(disk.f_bsize) / 1e9)
+            let gb = Double(disk.f_bavail) * Double(disk.f_bsize) / 1e9
+            result.freeGB = String(format: gb < 10 ? "%.1f" : "%.0f", gb)
         }
         var head: UnsafeMutablePointer<ifaddrs>?
         if getifaddrs(&head) == 0 {

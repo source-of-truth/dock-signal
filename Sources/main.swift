@@ -7,6 +7,10 @@ final class Controller: NSObject, NSApplicationDelegate {
     private let tile = Tile(frame: NSRect(x: 0, y: 0, width: 128, height: 128))
     private let detail = NSTextField(labelWithString: "")
     private var window: NSWindow?
+    private var settings: NSWindow?
+    private var checks: [Page: NSButton] = [:]
+    private var appearanceObserver: NSKeyValueObservation?
+    private var lastPowerSample = -Double.infinity
     private var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -16,6 +20,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         let actions = NSMenu()
         root.submenu = actions
         actions.addItem(detailsItem())
+        actions.addItem(settingsItem(shortcut: ","))
         actions.addItem(.separator())
         actions.addItem(withTitle: "Завершить Dock Signal",
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -26,7 +31,12 @@ final class Controller: NSObject, NSApplicationDelegate {
             self?.tile.position = position
             NSApp.dockTile.display()
         }
-        if !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: "didOfferScrollPermission") {
+        applyPages(Page.load())
+        appearanceObserver = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { [weak self] app, _ in
+            self?.tile.dark = app.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            app.dockTile.display()
+        }
+        if dial.pages.count > 1, !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: "didOfferScrollPermission") {
             UserDefaults.standard.set(true, forKey: "didOfferScrollPermission")
             enableScroll()
         }
@@ -41,22 +51,44 @@ final class Controller: NSObject, NSApplicationDelegate {
         dial.updatePermission()
         let reading = meter.sample()
         let connection = network.sample()
-        guard force || tile.reading != reading || tile.connection != connection else { return }
+        let now = Date.timeIntervalSinceReferenceDate
+        if dial.pages.contains(.cpuHistory) {
+            tile.history.removeAll { now - $0.time > 60 || $0.time > now }
+            tile.history.append(CPUSample(time: now, percent: reading.cpuPercent))
+        }
+        let oldPower = tile.power
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if dial.pages.contains(.power), uptime - lastPowerSample >= 30 {
+            tile.power = PowerReading.sample()
+            lastPowerSample = uptime
+        }
         let redraw: Bool
-        switch dial.page {
-        case 0: redraw = tile.reading != reading
-        case 1: redraw = tile.connection.freeGB != connection.freeGB || tile.connection.wifiIP != connection.wifiIP
-        default: redraw = tile.connection.receive != connection.receive || tile.connection.send != connection.send
+        switch dial.pages[dial.page] {
+        case .system: redraw = tile.reading != reading
+        case .storage: redraw = tile.connection.freeGB != connection.freeGB || tile.connection.wifiIP != connection.wifiIP
+        case .cpuHistory: redraw = true
+        case .power: redraw = oldPower != tile.power
+        case .network: redraw = tile.connection.receive != connection.receive || tile.connection.send != connection.send
         }
         tile.connection = connection
         tile.reading = reading
         if force || redraw { NSApp.dockTile.display() }
+        updateDetails()
+    }
+
+    private func updateDetails() {
+        let reading = tile.reading
+        let connection = tile.connection
         detail.stringValue = "Занято свопа: " + reading.swap + " " + reading.unit
             + "\nНагрузка на память: " + (reading.pressure?.description ?? "Нет данных")
             + "\nЗагрузка CPU: " + reading.cpu
             + "\nСвободно на диске: " + connection.freeGB + " ГБ"
             + "\nWi-Fi IPv4: " + (connection.wifiIP ?? "—")
             + "\nСеть ↓ " + connection.receive + "   ↑ " + connection.send
+        if dial.pages.contains(.power) {
+            let level = tile.power.percent.map { String($0) + "% · " } ?? ""
+            detail.stringValue += "\nПитание: " + level + tile.power.status
+        }
     }
 
     private func detailsItem() -> NSMenuItem {
@@ -67,13 +99,13 @@ final class Controller: NSObject, NSApplicationDelegate {
 
     private func addNavigation(to menu: NSMenu) {
         menu.addItem(.separator())
-        for (index, title) in Dial.titles.enumerated() {
-            let item = menu.addItem(withTitle: title, action: #selector(selectPage(_:)), keyEquivalent: "")
+        for (index, page) in dial.pages.enumerated() {
+            let item = menu.addItem(withTitle: page.title, action: #selector(selectPage(_:)), keyEquivalent: "")
             item.target = self
             item.tag = index
             item.state = index == dial.page ? .on : .off
         }
-        if !AXIsProcessTrusted() {
+        if dial.pages.count > 1, !AXIsProcessTrusted() {
             menu.addItem(.separator())
             menu.addItem(withTitle: "Включить прокрутку…", action: #selector(enableScroll), keyEquivalent: "").target = self
         }
@@ -90,7 +122,63 @@ final class Controller: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(detailsItem())
         addNavigation(to: menu)
+        menu.addItem(.separator())
+        menu.addItem(settingsItem(shortcut: ""))
         return menu
+    }
+
+    private func settingsItem(shortcut: String) -> NSMenuItem {
+        let item = NSMenuItem(title: "Настроить страницы…", action: #selector(showSettings), keyEquivalent: shortcut)
+        item.target = self
+        return item
+    }
+
+    private func applyPages(_ pages: [Page]) {
+        tile.pages = pages
+        if !pages.contains(.cpuHistory) { tile.history.removeAll() }
+        if !pages.contains(.power) { lastPowerSample = -Double.infinity }
+        else if !dial.pages.contains(.power) {
+            tile.power = PowerReading.sample()
+            lastPowerSample = ProcessInfo.processInfo.systemUptime
+        }
+        dial.configure(pages)
+        updateDetails()
+        dial.updatePermission()
+        for (page, button) in checks {
+            let on = pages.contains(page)
+            button.state = on ? .on : .off
+            button.isEnabled = !on || pages.count > 1
+        }
+    }
+
+    @objc private func togglePage(_ sender: NSButton) {
+        guard let page = checks.first(where: { $0.value === sender })?.key else { return }
+        let pages = Page.allCases.filter { $0 == page ? sender.state == .on : dial.pages.contains($0) }
+        guard !pages.isEmpty else { sender.state = .on; return }
+        UserDefaults.standard.set(pages.map(\.rawValue), forKey: Page.preference)
+        applyPages(pages)
+    }
+
+    @objc private func showSettings() {
+        if settings == nil {
+            let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 290, height: 218),
+                                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            panel.title = "Страницы в Dock"
+            panel.isReleasedWhenClosed = false
+            for (i, page) in Page.allCases.enumerated() {
+                let button = NSButton(checkboxWithTitle: page.title, target: self, action: #selector(togglePage(_:)))
+                button.frame = NSRect(x: 24, y: 171 - 36 * i, width: 245, height: 24)
+                let on = dial.pages.contains(page)
+                button.state = on ? .on : .off
+                button.isEnabled = !on || dial.pages.count > 1
+                panel.contentView?.addSubview(button)
+                checks[page] = button
+            }
+            panel.center()
+            settings = panel
+        }
+        settings?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc func show() {
@@ -128,6 +216,8 @@ if CommandLine.arguments.contains("--check") {
     let connection = network.sample()
     print("FREE GB", connection.freeGB, "Wi-Fi IPv4", connection.wifiIP ?? "—",
           "RX", connection.receive, "TX", connection.send)
+    let power = PowerReading.sample()
+    print("POWER", power.percent.map { String($0) + "%" } ?? "—", power.status)
     exit(0)
 }
 
